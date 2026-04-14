@@ -2,16 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
+import ssl
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
-import ssl
-
-try:
-    import certifi
-except Exception:
-    certifi = None
 
 from .config import build_links
 from .db import connect_db
@@ -345,15 +340,41 @@ def format_discord_messages(
     return chunks
 
 
-def send_discord_messages(webhook_url: str, messages: list[str], timeout: float = 20.0) -> list[dict[str, Any]]:
+def _build_ssl_context() -> ssl.SSLContext:
+    try:
+        import certifi  # type: ignore
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def send_discord_messages(
+    webhook_url: str,
+    messages: list[str],
+    timeout: float = 20.0,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    ssl_context = ssl.create_default_context(cafile=certifi.where()) if certifi else ssl.create_default_context()
+    ssl_context = _build_ssl_context()
+    total = max(1, len(messages))
+
     for index, content in enumerate(messages, start=1):
+        if progress_cb:
+            progress_cb(
+                {
+                    "step": "discord_send",
+                    "message": f"Discord-Nachricht {index}/{total} wird gesendet",
+                    "current": index,
+                    "total": total,
+                    "ratio": index / total,
+                }
+            )
         payload = json.dumps({"content": content}).encode("utf-8")
         request = Request(
             webhook_url,
             data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "SpanshPlanner/1.0"},
+            headers={"Content-Type": "application/json", "User-Agent": "VALK-Spansh-Planner/1.0"},
             method="POST",
         )
         try:
