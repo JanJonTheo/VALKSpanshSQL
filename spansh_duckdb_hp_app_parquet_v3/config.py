@@ -38,8 +38,25 @@ def default_link_template_path() -> Path:
 DEFAULT_LINK_TEMPLATES = {
     "edsm": "https://www.edsm.net/en/search/systems/index/name/{name_query}",
     "inara": "https://inara.cz/elite/search/?search={name_query}",
-    "edgis": "https://edgis.elitedangereuse.fr/",
+    "edgis": "https://edgis.elitedangereuse.fr/static/sysmap.html?system={name_query}",
 }
+
+
+def _normalize_template(key: str, template: str) -> str:
+    value = (template or "").strip()
+    if not value:
+        return DEFAULT_LINK_TEMPLATES.get(key, value)
+
+    if key == "edgis":
+        lower = value.lower().rstrip("/")
+        if "{name" not in value and lower in {
+            "https://edgis.elitedangereuse.fr",
+            "http://edgis.elitedangereuse.fr",
+        }:
+            return DEFAULT_LINK_TEMPLATES["edgis"]
+        if "{name" not in value and lower == "https://edgis.elitedangereuse.fr/static/sysmap.html?system=":
+            return DEFAULT_LINK_TEMPLATES["edgis"]
+    return value
 
 
 def load_link_templates(path: str | os.PathLike[str] | None = None) -> dict[str, str]:
@@ -51,7 +68,8 @@ def load_link_templates(path: str | os.PathLike[str] | None = None) -> dict[str,
         if isinstance(data, dict):
             for key, value in data.items():
                 if isinstance(key, str) and isinstance(value, str):
-                    templates[key.lower()] = value
+                    k = key.lower()
+                    templates[k] = _normalize_template(k, value)
     return templates
 
 
@@ -61,6 +79,7 @@ def build_links(system_name: str, path: str | os.PathLike[str] | None = None) ->
     raw_encoded = quote_plus(system_name, safe="")
     links: dict[str, str] = {}
     for key, template in templates.items():
+        template = _normalize_template(key, template)
         try:
             links[key] = template.format(
                 name=system_name,

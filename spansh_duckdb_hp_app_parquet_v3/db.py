@@ -10,7 +10,9 @@ from .config import default_db_path, default_temp_dir, ensure_dir, ensure_parent
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS systems (
-    name VARCHAR PRIMARY KEY,
+    system_key VARCHAR PRIMARY KEY,
+    system_address BIGINT,
+    name VARCHAR,
     x DOUBLE,
     y DOUBLE,
     z DOUBLE,
@@ -38,6 +40,7 @@ CREATE TABLE IF NOT EXISTS app_meta (
 
 INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_systems_name ON systems(name);
+CREATE INDEX IF NOT EXISTS idx_systems_address ON systems(system_address);
 CREATE INDEX IF NOT EXISTS idx_systems_xyz ON systems(x, y, z);
 CREATE INDEX IF NOT EXISTS idx_systems_claimable ON systems(controlling_faction, faction_count);
 CREATE INDEX IF NOT EXISTS idx_systems_ww ON systems(water_world_count);
@@ -46,6 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_systems_elw ON systems(earthlike_world_count);
 
 DROP_INDEX_SQL = """
 DROP INDEX IF EXISTS idx_systems_name;
+DROP INDEX IF EXISTS idx_systems_address;
 DROP INDEX IF EXISTS idx_systems_xyz;
 DROP INDEX IF EXISTS idx_systems_claimable;
 DROP INDEX IF EXISTS idx_systems_ww;
@@ -87,12 +91,15 @@ def connect_db(
 def init_db(
     db_path: str | os.PathLike[str] | None = None,
     temp_dir: str | os.PathLike[str] | None = None,
+    *,
+    threads: int | None = None,
+    memory_limit: str = "8GB",
 ) -> Path:
     path = get_db_path(db_path)
-    con = connect_db(path, temp_dir=temp_dir)
+    con = connect_db(path, temp_dir=temp_dir, threads=threads, memory_limit=memory_limit)
     try:
         con.execute(SCHEMA_SQL)
-        set_meta(con, "schema_version", "3")
+        set_meta(con, "schema_version", "4")
         con.checkpoint()
     finally:
         con.close()
@@ -121,3 +128,20 @@ def set_meta(con: duckdb.DuckDBPyConnection, key: str, value: Any) -> None:
 def get_meta(con: duckdb.DuckDBPyConnection, key: str, default: str = "") -> str:
     row = con.execute("SELECT value FROM app_meta WHERE key = ?", [key]).fetchone()
     return row[0] if row else default
+
+
+def get_db_settings(
+    db_path: str | os.PathLike[str] | None = None,
+    temp_dir: str | os.PathLike[str] | None = None,
+    *,
+    threads: int | None = None,
+    memory_limit: str = "8GB",
+) -> dict[str, str]:
+    con = connect_db(db_path, temp_dir=temp_dir, threads=threads, memory_limit=memory_limit, read_only=False)
+    try:
+        thr = con.execute("SELECT current_setting('threads')").fetchone()[0]
+        mem = con.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        tmp = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+        return {"threads": str(thr), "memory_limit": str(mem), "temp_directory": str(tmp)}
+    finally:
+        con.close()

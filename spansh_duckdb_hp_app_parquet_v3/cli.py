@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 from .db import init_db
 from .importer import convert_dump_to_parquet, import_dump, import_parquet
@@ -10,17 +9,21 @@ from .query import query_systems, write_csv
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="spansh-duckdb-hp-v3")
+    parser = argparse.ArgumentParser(prog="spansh-project-integrated")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_init = sub.add_parser("init-db", help="DuckDB initialisieren")
     p_init.add_argument("--db", required=True)
     p_init.add_argument("--temp-dir", default=None)
+    p_init.add_argument("--threads", type=int, default=None)
+    p_init.add_argument("--memory-limit", default="32GB")
 
     def add_import_args(p):
         p.add_argument("--db", required=True)
         p.add_argument("--dump", required=True)
         p.add_argument("--temp-dir", default=None)
+        p.add_argument("--threads", type=int, default=None)
+        p.add_argument("--memory-limit", default="32GB")
         p.add_argument("--batch-size", type=int, default=50000)
         p.add_argument("--cleanup-temp-before", action="store_true")
         p.add_argument("--cleanup-temp-after", action="store_true")
@@ -30,11 +33,18 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--resume-free-gb", type=float, default=25.0)
         p.add_argument("--low-disk-poll-seconds", type=float, default=10.0)
         p.add_argument("--keep-parquet", action="store_true")
+        p.add_argument("--target-rows-per-file", type=int, default=1000000)
+        p.add_argument("--parallel-writers", type=int, default=1)
+        p.add_argument("--ultra-mmap", action="store_true")
+        p.add_argument("--ultra-workers", type=int, default=None)
+        p.add_argument("--parser-mode", default="auto", choices=["auto", "simdjson", "orjson", "json"])
 
     p_convert = sub.add_parser("convert-parquet", help="Dump streamend in Parquet umwandeln")
     p_convert.add_argument("--dump", required=True)
     p_convert.add_argument("--parquet", required=True)
     p_convert.add_argument("--row-group-size", type=int, default=50000)
+    p_convert.add_argument("--target-rows-per-file", type=int, default=1000000)
+    p_convert.add_argument("--parallel-writers", type=int, default=1)
     p_convert.add_argument("--compression", default="zstd", choices=["zstd", "snappy", "gzip", "brotli", "none"])
 
     p_full = sub.add_parser("import-full", help="Full Dump importieren (JSON/GZ/ZST oder Parquet)")
@@ -47,13 +57,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_parquet_full.add_argument("--db", required=True)
     p_parquet_full.add_argument("--parquet", required=True)
     p_parquet_full.add_argument("--temp-dir", default=None)
+    p_parquet_full.add_argument("--threads", type=int, default=None)
+    p_parquet_full.add_argument("--memory-limit", default="32GB")
 
     p_parquet_patch = sub.add_parser("import-parquet-patch", help="Parquet Patch Import")
     p_parquet_patch.add_argument("--db", required=True)
     p_parquet_patch.add_argument("--parquet", required=True)
     p_parquet_patch.add_argument("--temp-dir", default=None)
+    p_parquet_patch.add_argument("--threads", type=int, default=None)
+    p_parquet_patch.add_argument("--memory-limit", default="32GB")
 
-    p_query = sub.add_parser("query-systems", help="WW/ELW Systeme abfragen")
+    p_query = sub.add_parser("query-systems", help="Systeme für Planner abfragen")
     p_query.add_argument("--db", required=True)
     p_query.add_argument("--reference", required=True)
     p_query.add_argument("--radius", type=float, required=True)
@@ -87,14 +101,21 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.cmd == "init-db":
-        path = init_db(args.db, temp_dir=args.temp_dir)
+        path = init_db(args.db, temp_dir=args.temp_dir, threads=args.threads, memory_limit=args.memory_limit)
         print(f"DB initialisiert: {path}")
         return 0
 
     if args.cmd == "convert-parquet":
         compression = None if args.compression == "none" else args.compression
-        stats = convert_dump_to_parquet(args.dump, args.parquet, row_group_size=args.row_group_size, compression=compression or "zstd",
-                                        progress_cb=lambda data: print(json.dumps(data, ensure_ascii=False)))
+        stats = convert_dump_to_parquet(
+            args.dump,
+            args.parquet,
+            row_group_size=args.row_group_size,
+            compression=compression or "zstd",
+            target_rows_per_file=args.target_rows_per_file,
+            parallel_writers=args.parallel_writers,
+            progress_cb=lambda data: print(json.dumps(data, ensure_ascii=False)),
+        )
         _print_stats(stats)
         return 0
 
@@ -114,14 +135,27 @@ def main() -> int:
             low_disk_poll_seconds=args.low_disk_poll_seconds,
             progress_cb=lambda data: print(json.dumps(data, ensure_ascii=False)),
             keep_parquet=args.keep_parquet,
+            threads=args.threads,
+            memory_limit=args.memory_limit,
+            target_rows_per_file=args.target_rows_per_file,
+            parallel_writers=args.parallel_writers,
+            ultra_mmap_mode=args.ultra_mmap,
+            ultra_workers=args.ultra_workers,
+            parser_mode=args.parser_mode,
         )
         _print_stats(stats)
         return 0
 
     if args.cmd in {"import-parquet-full", "import-parquet-patch"}:
-        stats = import_parquet(args.db, args.parquet, temp_dir=args.temp_dir,
-                               mode="full" if args.cmd == "import-parquet-full" else "patch",
-                               progress_cb=lambda data: print(json.dumps(data, ensure_ascii=False)))
+        stats = import_parquet(
+            args.db,
+            args.parquet,
+            temp_dir=args.temp_dir,
+            mode="full" if args.cmd == "import-parquet-full" else "patch",
+            threads=args.threads,
+            memory_limit=args.memory_limit,
+            progress_cb=lambda data: print(json.dumps(data, ensure_ascii=False)),
+        )
         _print_stats(stats)
         return 0
 
